@@ -1,7 +1,7 @@
 # Shelley SD60 Lunch Card
 
 <p align="center">
-  <img src="brand-icon.svg" alt="Shelley SD60 Lunch Card brand icon" width="140">
+  <img src="brand-icon.png" alt="Shelley SD60 Lunch Card brand icon" width="140">
 </p>
 
 A visual Lovelace card for the Shelley SD60 school lunch menus, designed for Home Assistant and the `linq_shelley` integration.
