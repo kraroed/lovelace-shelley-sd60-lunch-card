@@ -221,8 +221,9 @@ if (!customElements.get("shelley-sd60-lunch-card")) {
 }
 
 /* Shelley SD60 Tomorrow Card
- * Displays tomorrow's lunch menu from the linq_shelley integration.
- * Included in the same HACS resource as the main Shelley SD60 Lunch Card.
+ * Uses the same linq_shelley date and menu-group sensors as the main card.
+ * For Shelley High and Hobbs Middle, categories come from their dedicated
+ * menu-group sensors, whose menu attributes are keyed by the selected date.
  */
 class ShelleySd60TomorrowCard extends HTMLElement {
   constructor() {
@@ -232,7 +233,7 @@ class ShelleySd60TomorrowCard extends HTMLElement {
 
   setConfig(config) {
     if (!config || !config.entity) {
-      throw new Error("Please define an entity for the Shelley SD60 Tomorrow Card.");
+      throw new Error("Please define the school's lunch-tomorrow entity.");
     }
     this.config = config;
     this.render();
@@ -243,67 +244,39 @@ class ShelleySd60TomorrowCard extends HTMLElement {
     this.render();
   }
 
-  _getTomorrowDate() {
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    return tomorrow;
-  }
-
-  _formatDate(date) {
-    return date.toLocaleDateString(undefined, {
-      weekday: "long",
-      month: "long",
-      day: "numeric",
-    });
-  }
-
-  _findDateValue(value, date) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-
-    const iso = date.toISOString().slice(0, 10);
-    const weekday = date.toLocaleDateString(undefined, { weekday: "long" }).toLowerCase();
-    const shortWeekday = date.toLocaleDateString(undefined, { weekday: "short" }).toLowerCase();
-
-    return value[iso] ?? value[weekday] ?? value[shortWeekday] ?? value.tomorrow ?? value;
-  }
-
   _items(value) {
     if (Array.isArray(value)) {
-      return value.map(item => {
-        if (typeof item === "string") return item;
-        return item?.name || item?.title || JSON.stringify(item);
-      }).filter(Boolean);
+      return value.map(item => typeof item === "string" ? item : item?.name || item?.title || JSON.stringify(item)).filter(Boolean);
     }
     if (typeof value === "string" && value.trim()) {
-      return value.split(/\s*,\s*|\n+/).map(item => item.trim()).filter(Boolean);
+      return value.split(/\\s*,\\s*|\\n+/).map(item => item.trim()).filter(Boolean);
     }
     return [];
   }
 
-  _sectionValue(attrs, names, tomorrow) {
-    for (const name of names) {
-      if (attrs[name] !== undefined && attrs[name] !== null) {
-        return this._findDateValue(attrs[name], tomorrow);
-      }
-    }
-    return undefined;
+  _dateLabel(value) {
+    if (!value) return "";
+    const date = new Date(value + "T12:00:00");
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString(undefined, {
+      weekday: "long", month: "long", day: "numeric"
+    });
   }
 
-  _schoolName(entityId, attrs) {
-    return this.config.school || attrs.school || attrs.friendly_name || entityId
-      .replace(/^sensor\./, "")
-      .replace(/_lunch_tomorrow$/, "")
-      .replace(/_/g, " ")
-      .replace(/\b\w/g, c => c.toUpperCase());
+  _state(entityId) {
+    return this._hass?.states?.[entityId] || null;
   }
 
-  _renderSection(title, icon, items) {
+  _renderSection(title, icon, items, sensorState) {
     const section = document.createElement("section");
     section.className = "section";
-
     const heading = document.createElement("div");
     heading.className = "section-heading";
-    heading.innerHTML = `<span class="icon">${icon}</span><span>${title}</span>`;
+    const iconEl = document.createElement("span");
+    iconEl.className = "icon";
+    iconEl.textContent = icon;
+    const titleEl = document.createElement("span");
+    titleEl.textContent = title;
+    heading.append(iconEl, titleEl);
     section.appendChild(heading);
 
     if (items.length) {
@@ -317,10 +290,11 @@ class ShelleySd60TomorrowCard extends HTMLElement {
     } else {
       const empty = document.createElement("div");
       empty.className = "empty";
-      empty.textContent = "No menu items listed.";
+      empty.textContent = sensorState?.state === "unavailable"
+        ? "Menu data is unavailable right now."
+        : "No menu items reported for this section.";
       section.appendChild(empty);
     }
-
     return section;
   }
 
@@ -328,32 +302,46 @@ class ShelleySd60TomorrowCard extends HTMLElement {
     if (!this.shadowRoot || !this.config || !this._hass) return;
 
     const entityId = this.config.entity;
-    const state = this._hass.states?.[entityId];
-    const attrs = state?.attributes || {};
-    const tomorrow = this._getTomorrowDate();
-    const school = this._schoolName(entityId, attrs);
-    const isHighSchool = /high school|shelley_high_school/i.test(`${entityId} ${school}`);
-    const isMiddleSchool = /middle school|hobbs_middle_school/i.test(`${entityId} ${school}`);
-
-    const main = this._sectionValue(attrs, ["main_menu", "main", "tomorrow"], tomorrow);
+    const dateState = this._state(entityId);
+    const attrs = dateState?.attributes || {};
+    const schoolKey = this.config.school_key ||
+      (entityId.includes("shelley_high_school") ? "shelley_high" :
+       entityId.includes("hobbs_middle_school") ? "hobbs_middle" : null);
+    const school = this.config.school || attrs.school || attrs.friendly_name ||
+      entityId.replace(/^sensor\\./, "").replace(/_lunch_tomorrow$/, "").replace(/_/g, " ");
+    const menuDate = attrs.date || "";
     const sections = [];
 
-    if (isHighSchool) {
-      sections.push(["Main Menu", "🍽️", this._items(main)]);
-      sections.push(["Hot N Ready", "🔥", this._items(this._sectionValue(attrs, ["hot_n_ready", "hot_and_ready"], tomorrow))]);
-      sections.push(["Grab N Go", "🥪", this._items(this._sectionValue(attrs, ["grab_n_go", "grab_and_go"], tomorrow))]);
-      sections.push(["Shared Items", "🥗", this._items(this._sectionValue(attrs, ["shared_items", "shared"], tomorrow))]);
-    } else if (isMiddleSchool) {
-      sections.push(["Main Menu", "🍽️", this._items(main)]);
-      sections.push(["Second Line", "🍕", this._items(this._sectionValue(attrs, ["second_line", "second_line_menu"], tomorrow))]);
+    // Match the original card: these schools get their menu categories from
+    // the separate group sensors, not from the date sensor's attributes.
+    if (schoolKey && GROUPS[schoolKey]) {
+      GROUPS[schoolKey].forEach(group => {
+        const groupEntity = this.config.entities?.groups?.[group.label] ||
+          this.config.entities?.[schoolKey]?.groups?.[group.label] ||
+          group.entity;
+        const groupState = this._state(groupEntity);
+        const groupMenu = groupState?.attributes?.menu;
+        let value = groupMenu;
+        if (groupMenu && typeof groupMenu === "object" && !Array.isArray(groupMenu)) {
+          value = groupMenu[menuDate] ??
+            groupMenu[menuDate.slice(0, 10)] ??
+            [];
+        }
+        sections.push([group.label, group.icon, this._items(value), groupState]);
+      });
     } else {
-      sections.push(["Lunch Menu", "🍽️", this._items(main || attrs.menu || state?.state)]);
+      const menu = attrs.menu;
+      let value = menu;
+      if (menu && typeof menu === "object" && !Array.isArray(menu)) {
+        value = menu[menuDate] ?? menu[menuDate.slice(0, 10)] ?? [];
+      }
+      sections.push(["Lunch Menu", "🍽️", this._items(value), dateState]);
     }
 
     const style = document.createElement("style");
     style.textContent = `
-      :host { display: block; color: var(--primary-text-color); }
-      ha-card { overflow: hidden; }
+      :host { display: block; color: var(--primary-text-color); font-family: var(--paper-font-body1_-_font-family, Roboto, Noto, sans-serif); }
+      ha-card { overflow: hidden; background: var(--ha-card-background, var(--card-background-color)); border-radius: var(--ha-card-border-radius, 12px); border: 1px solid var(--divider-color); box-shadow: var(--ha-card-box-shadow, none); }
       .header { padding: 18px; background: linear-gradient(125deg, var(--primary-color), var(--accent-color, var(--primary-color))); color: var(--text-primary-color, #fff); }
       .title { font-size: 20px; font-weight: 700; line-height: 1.25; }
       .school { margin-top: 4px; opacity: .9; font-size: 13px; }
@@ -381,25 +369,36 @@ class ShelleySd60TomorrowCard extends HTMLElement {
 
     const date = document.createElement("div");
     date.className = "date";
-    date.textContent = this._formatDate(tomorrow);
-
+    date.textContent = this._dateLabel(menuDate) || "Tomorrow's menu";
     const body = document.createElement("div");
     body.className = "body";
-    sections.forEach(([sectionTitle, icon, items]) => body.appendChild(this._renderSection(sectionTitle, icon, items)));
+
+    if (!dateState) {
+      const missing = document.createElement("div");
+      missing.className = "empty";
+      missing.textContent = "Sensor not found: " + entityId;
+      body.appendChild(missing);
+    } else if (dateState.state === "unavailable" || dateState.state === "unknown") {
+      const unavailable = document.createElement("div");
+      unavailable.className = "empty";
+      unavailable.textContent = "The lunch-tomorrow sensor is " + dateState.state + ".";
+      body.appendChild(unavailable);
+    } else {
+      sections.forEach(([label, icon, items, sensorState]) =>
+        body.appendChild(this._renderSection(label, icon, items, sensorState)));
+    }
 
     const status = document.createElement("div");
     status.className = "status";
-    status.textContent = state?.last_updated
-      ? `Updated ${new Date(state.last_updated).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+    status.textContent = dateState?.last_updated
+      ? "Updated " + new Date(dateState.last_updated).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
       : "Waiting for sensor data";
 
     card.append(header, date, body, status);
     this.shadowRoot.replaceChildren(style, card);
   }
 
-  getCardSize() {
-    return 4;
-  }
+  getCardSize() { return 4; }
 }
 
 if (!customElements.get("shelley-sd60-tomorrow-card")) {
@@ -408,7 +407,7 @@ if (!customElements.get("shelley-sd60-tomorrow-card")) {
   window.customCards.push({
     type: "shelley-sd60-tomorrow-card",
     name: "Shelley SD60 Tomorrow Lunch",
-    description: "Tomorrow-only lunch card for Shelley School District 60.",
+    description: "Tomorrow lunch card using the linq_shelley integration's date and menu-group sensors.",
     preview: true
   });
 }
