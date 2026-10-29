@@ -219,3 +219,196 @@ if (!customElements.get("shelley-sd60-lunch-card")) {
     preview: true
   });
 }
+
+/* Shelley SD60 Tomorrow Card
+ * Displays tomorrow's lunch menu from the linq_shelley integration.
+ * Included in the same HACS resource as the main Shelley SD60 Lunch Card.
+ */
+class ShelleySd60TomorrowCard extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+  }
+
+  setConfig(config) {
+    if (!config || !config.entity) {
+      throw new Error("Please define an entity for the Shelley SD60 Tomorrow Card.");
+    }
+    this.config = config;
+    this.render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this.render();
+  }
+
+  _getTomorrowDate() {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return tomorrow;
+  }
+
+  _formatDate(date) {
+    return date.toLocaleDateString(undefined, {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+    });
+  }
+
+  _findDateValue(value, date) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+
+    const iso = date.toISOString().slice(0, 10);
+    const weekday = date.toLocaleDateString(undefined, { weekday: "long" }).toLowerCase();
+    const shortWeekday = date.toLocaleDateString(undefined, { weekday: "short" }).toLowerCase();
+
+    return value[iso] ?? value[weekday] ?? value[shortWeekday] ?? value.tomorrow ?? value;
+  }
+
+  _items(value) {
+    if (Array.isArray(value)) {
+      return value.map(item => {
+        if (typeof item === "string") return item;
+        return item?.name || item?.title || JSON.stringify(item);
+      }).filter(Boolean);
+    }
+    if (typeof value === "string" && value.trim()) {
+      return value.split(/\s*,\s*|\n+/).map(item => item.trim()).filter(Boolean);
+    }
+    return [];
+  }
+
+  _sectionValue(attrs, names, tomorrow) {
+    for (const name of names) {
+      if (attrs[name] !== undefined && attrs[name] !== null) {
+        return this._findDateValue(attrs[name], tomorrow);
+      }
+    }
+    return undefined;
+  }
+
+  _schoolName(entityId, attrs) {
+    return this.config.school || attrs.school || attrs.friendly_name || entityId
+      .replace(/^sensor\./, "")
+      .replace(/_lunch_tomorrow$/, "")
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  _renderSection(title, icon, items) {
+    const section = document.createElement("section");
+    section.className = "section";
+
+    const heading = document.createElement("div");
+    heading.className = "section-heading";
+    heading.innerHTML = `<span class="icon">${icon}</span><span>${title}</span>`;
+    section.appendChild(heading);
+
+    if (items.length) {
+      const list = document.createElement("ul");
+      items.forEach(item => {
+        const li = document.createElement("li");
+        li.textContent = item;
+        list.appendChild(li);
+      });
+      section.appendChild(list);
+    } else {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "No menu items listed.";
+      section.appendChild(empty);
+    }
+
+    return section;
+  }
+
+  render() {
+    if (!this.shadowRoot || !this.config || !this._hass) return;
+
+    const entityId = this.config.entity;
+    const state = this._hass.states?.[entityId];
+    const attrs = state?.attributes || {};
+    const tomorrow = this._getTomorrowDate();
+    const school = this._schoolName(entityId, attrs);
+    const isHighSchool = /high school|shelley_high_school/i.test(`${entityId} ${school}`);
+    const isMiddleSchool = /middle school|hobbs_middle_school/i.test(`${entityId} ${school}`);
+
+    const main = this._sectionValue(attrs, ["main_menu", "main", "tomorrow"], tomorrow);
+    const sections = [];
+
+    if (isHighSchool) {
+      sections.push(["Main Menu", "🍽️", this._items(main)]);
+      sections.push(["Hot N Ready", "🔥", this._items(this._sectionValue(attrs, ["hot_n_ready", "hot_and_ready"], tomorrow))]);
+      sections.push(["Grab N Go", "🥪", this._items(this._sectionValue(attrs, ["grab_n_go", "grab_and_go"], tomorrow))]);
+      sections.push(["Shared Items", "🥗", this._items(this._sectionValue(attrs, ["shared_items", "shared"], tomorrow))]);
+    } else if (isMiddleSchool) {
+      sections.push(["Main Menu", "🍽️", this._items(main)]);
+      sections.push(["Second Line", "🍕", this._items(this._sectionValue(attrs, ["second_line", "second_line_menu"], tomorrow))]);
+    } else {
+      sections.push(["Lunch Menu", "🍽️", this._items(main || attrs.menu || state?.state)]);
+    }
+
+    const style = document.createElement("style");
+    style.textContent = `
+      :host { display: block; color: var(--primary-text-color); }
+      ha-card { overflow: hidden; }
+      .header { padding: 18px; background: linear-gradient(125deg, var(--primary-color), var(--accent-color, var(--primary-color))); color: var(--text-primary-color, #fff); }
+      .title { font-size: 20px; font-weight: 700; line-height: 1.25; }
+      .school { margin-top: 4px; opacity: .9; font-size: 13px; }
+      .date { padding: 14px 18px 4px; font-size: 14px; font-weight: 600; color: var(--secondary-text-color); }
+      .body { padding: 10px 18px 18px; }
+      .section { border: 1px solid var(--divider-color); border-radius: 12px; padding: 13px; margin-top: 10px; }
+      .section-heading { display: flex; align-items: center; gap: 9px; font-weight: 700; margin-bottom: 8px; }
+      .icon { font-size: 22px; }
+      ul { margin: 0; padding-left: 22px; line-height: 1.55; }
+      li { padding: 2px 0; }
+      .empty { color: var(--secondary-text-color); padding: 4px 0; }
+      .status { padding: 0 18px 16px; color: var(--secondary-text-color); font-size: 12px; }
+    `;
+
+    const card = document.createElement("ha-card");
+    const header = document.createElement("div");
+    header.className = "header";
+    const title = document.createElement("div");
+    title.className = "title";
+    title.textContent = this.config.title || "Tomorrow's Lunch";
+    const schoolEl = document.createElement("div");
+    schoolEl.className = "school";
+    schoolEl.textContent = school;
+    header.append(title, schoolEl);
+
+    const date = document.createElement("div");
+    date.className = "date";
+    date.textContent = this._formatDate(tomorrow);
+
+    const body = document.createElement("div");
+    body.className = "body";
+    sections.forEach(([sectionTitle, icon, items]) => body.appendChild(this._renderSection(sectionTitle, icon, items)));
+
+    const status = document.createElement("div");
+    status.className = "status";
+    status.textContent = state?.last_updated
+      ? `Updated ${new Date(state.last_updated).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+      : "Waiting for sensor data";
+
+    card.append(header, date, body, status);
+    this.shadowRoot.replaceChildren(style, card);
+  }
+
+  getCardSize() {
+    return 4;
+  }
+}
+
+if (!customElements.get("shelley-sd60-tomorrow-card")) {
+  customElements.define("shelley-sd60-tomorrow-card", ShelleySd60TomorrowCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({
+    type: "shelley-sd60-tomorrow-card",
+    name: "Shelley SD60 Tomorrow Lunch",
+    description: "Tomorrow-only lunch card for Shelley School District 60.",
+    preview: true
+  });
+}
